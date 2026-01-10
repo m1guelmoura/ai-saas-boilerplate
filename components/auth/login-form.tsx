@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { signIn } from "@/app/auth/actions";
+import { signIn, signInWithGoogle } from "@/app/auth/actions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -38,12 +38,25 @@ export function LoginForm() {
   async function handleGoogleSignIn() {
     setIsLoading(true);
     setError(null);
-    // TODO: Implement Google OAuth
-    // This is a placeholder for now
-    setTimeout(() => {
+
+    try {
+      const result = await signInWithGoogle();
+
+      if (result?.error) {
+        setError(result.error);
+        setIsLoading(false);
+      } else if (result?.url) {
+        // Redirect to Google OAuth
+        window.location.href = result.url;
+      } else {
+        setError("Falha ao iniciar autenticação Google");
+        setIsLoading(false);
+      }
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : "Erro ao iniciar autenticação Google";
+      setError(errorMessage);
       setIsLoading(false);
-      setError("Google OAuth será implementado em breve");
-    }, 500);
+    }
   }
 
   return (

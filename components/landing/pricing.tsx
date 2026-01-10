@@ -1,15 +1,48 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { Loader } from "@/components/ui/loader";
 import { Check } from "lucide-react";
 
 /**
  * Pricing Section Component
  * Monthly/Yearly toggle with pricing cards
+ * 
+ * Note: priceId should match your Stripe Price IDs
+ * Set these in your .env.local file as NEXT_PUBLIC_STRIPE_PRICE_ID_*
+ * Example: NEXT_PUBLIC_STRIPE_PRICE_ID_STARTER_MONTHLY=price_xxxxx
  */
-const pricingPlans = {
+interface PricingPlan {
+  name: string;
+  price: string;
+  originalPrice?: string;
+  description: string;
+  features: string[];
+  cta: string;
+  popular: boolean;
+  priceId?: string; // Stripe Price ID
+  isEnterprise?: boolean; // Enterprise plans might need custom handling
+}
+
+// Get price IDs from environment variables
+// These NEXT_PUBLIC_ variables are available in client components after build
+// Set them in your .env.local file
+const PRICE_IDS = {
+  STARTER_MONTHLY: process.env.NEXT_PUBLIC_STRIPE_PRICE_ID_STARTER_MONTHLY,
+  PROFESSIONAL_MONTHLY: process.env.NEXT_PUBLIC_STRIPE_PRICE_ID_PROFESSIONAL_MONTHLY,
+  ENTERPRISE_MONTHLY: process.env.NEXT_PUBLIC_STRIPE_PRICE_ID_ENTERPRISE_MONTHLY,
+  STARTER_YEARLY: process.env.NEXT_PUBLIC_STRIPE_PRICE_ID_STARTER_YEARLY,
+  PROFESSIONAL_YEARLY: process.env.NEXT_PUBLIC_STRIPE_PRICE_ID_PROFESSIONAL_YEARLY,
+  ENTERPRISE_YEARLY: process.env.NEXT_PUBLIC_STRIPE_PRICE_ID_ENTERPRISE_YEARLY,
+};
+
+const pricingPlans: {
+  monthly: PricingPlan[];
+  yearly: PricingPlan[];
+} = {
   monthly: [
     {
       name: "Starter",
@@ -24,6 +57,7 @@ const pricingPlans = {
       ],
       cta: "Comprar Agora",
       popular: false,
+      priceId: PRICE_IDS.STARTER_MONTHLY,
     },
     {
       name: "Professional",
@@ -39,6 +73,7 @@ const pricingPlans = {
       ],
       cta: "Comprar Agora",
       popular: true,
+      priceId: PRICE_IDS.PROFESSIONAL_MONTHLY,
     },
     {
       name: "Enterprise",
@@ -55,6 +90,8 @@ const pricingPlans = {
       ],
       cta: "Falar com Vendas",
       popular: false,
+      isEnterprise: true,
+      priceId: PRICE_IDS.ENTERPRISE_MONTHLY,
     },
   ],
   yearly: [
@@ -72,6 +109,7 @@ const pricingPlans = {
       ],
       cta: "Comprar Agora",
       popular: false,
+      priceId: PRICE_IDS.STARTER_YEARLY,
     },
     {
       name: "Professional",
@@ -88,6 +126,7 @@ const pricingPlans = {
       ],
       cta: "Comprar Agora",
       popular: true,
+      priceId: PRICE_IDS.PROFESSIONAL_YEARLY,
     },
     {
       name: "Enterprise",
@@ -105,16 +144,72 @@ const pricingPlans = {
       ],
       cta: "Falar com Vendas",
       popular: false,
+      isEnterprise: true,
+      priceId: PRICE_IDS.ENTERPRISE_YEARLY,
     },
   ],
 };
 
 export function Pricing() {
+  const router = useRouter();
   const [billingCycle, setBillingCycle] = useState<"monthly" | "yearly">(
     "monthly"
   );
+  const [loading, setLoading] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const plans = pricingPlans[billingCycle];
+
+  /**
+   * Handle subscription checkout
+   */
+  const handleSubscribe = async (plan: PricingPlan) => {
+    // Enterprise plans might need custom handling (contact sales)
+    if (plan.isEnterprise || !plan.priceId) {
+      // For enterprise, you might want to open a contact form or email
+      window.location.href = "mailto:sales@yourcompany.com?subject=Enterprise Plan Inquiry";
+      return;
+    }
+
+    setLoading(plan.name);
+    setError(null);
+
+    try {
+      const response = await fetch("/api/stripe/checkout", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          priceId: plan.priceId,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        // If unauthorized, redirect to login
+        if (response.status === 401) {
+          router.push("/login?redirect=pricing");
+          return;
+        }
+        throw new Error(data.error || "Failed to create checkout session");
+      }
+
+      // Redirect to Stripe Checkout
+      if (data.url) {
+        window.location.href = data.url;
+      } else {
+        throw new Error("No checkout URL returned");
+      }
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : "An error occurred";
+      setError(errorMessage);
+      console.error("Error creating checkout session:", err);
+    } finally {
+      setLoading(null);
+    }
+  };
 
   return (
     <section id="pricing" className="bg-muted/50 py-20 md:py-32">
@@ -154,6 +249,13 @@ export function Pricing() {
             </button>
           </div>
         </div>
+
+        {/* Error Message */}
+        {error && (
+          <div className="mx-auto mb-8 max-w-2xl rounded-md bg-destructive/10 p-4 text-center text-sm text-destructive">
+            {error}
+          </div>
+        )}
 
         {/* Pricing Cards */}
         <div className="grid gap-8 md:grid-cols-3">
@@ -209,8 +311,17 @@ export function Pricing() {
                 <Button
                   className="w-full"
                   variant={plan.popular ? "default" : "outline"}
+                  onClick={() => handleSubscribe(plan)}
+                  disabled={loading !== null}
                 >
-                  {plan.cta}
+                  {loading === plan.name ? (
+                    <>
+                      <Loader size="sm" className="mr-2" />
+                      Processando...
+                    </>
+                  ) : (
+                    plan.cta
+                  )}
                 </Button>
               </CardFooter>
             </Card>

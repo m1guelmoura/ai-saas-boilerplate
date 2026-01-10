@@ -36,10 +36,14 @@ export function Navbar() {
             >
               FAQ
             </Link>
-            <Button variant="ghost" size="sm">
-              Entrar
-            </Button>
-            <Button size="sm">Começar Agora</Button>
+            <Link href="/login">
+              <Button variant="ghost" size="sm">
+                Entrar
+              </Button>
+            </Link>
+            <Link href="/signup">
+              <Button size="sm">Começar Agora</Button>
+            </Link>
           </div>
 
           {/* Mobile Menu Button */}

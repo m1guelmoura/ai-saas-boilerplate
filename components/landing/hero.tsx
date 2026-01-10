@@ -1,11 +1,43 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { ArrowRight, Sparkles } from "lucide-react";
+import { createClient } from "@/lib/supabase/client";
 
 /**
  * Hero Section Component
  * Main landing section with headline and CTA
+ * Buttons redirect to /signup if not logged in, or /dashboard if logged in
  */
 export function Hero() {
+  const router = useRouter();
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    // Check if user is authenticated
+    const checkAuth = async () => {
+      try {
+        const supabase = createClient();
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
+        setIsAuthenticated(!!session);
+      } catch (error) {
+        setIsAuthenticated(false);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    checkAuth();
+  }, []);
+
+  const getStartedUrl = isAuthenticated ? "/dashboard" : "/signup";
+
   return (
     <section className="relative overflow-hidden bg-gradient-to-b from-background to-muted/20 py-20 md:py-32">
       <div className="container mx-auto px-4">
@@ -33,13 +65,25 @@ export function Hero() {
 
           {/* CTA Buttons */}
           <div className="flex flex-col gap-4 sm:flex-row sm:justify-center">
-            <Button size="lg" className="group text-base">
-              Começar Agora
-              <ArrowRight className="ml-2 h-4 w-4 transition-transform group-hover:translate-x-1" />
-            </Button>
-            <Button size="lg" variant="outline" className="text-base">
-              Ver Demo
-            </Button>
+            <Link href={getStartedUrl}>
+              <Button size="lg" className="group text-base w-full sm:w-auto">
+                {isLoading ? (
+                  "Carregando..."
+                ) : isAuthenticated ? (
+                  "Ir para Dashboard"
+                ) : (
+                  <>
+                    Começar Agora
+                    <ArrowRight className="ml-2 h-4 w-4 transition-transform group-hover:translate-x-1" />
+                  </>
+                )}
+              </Button>
+            </Link>
+            <Link href="/#pricing">
+              <Button size="lg" variant="outline" className="text-base w-full sm:w-auto">
+                Ver Planos
+              </Button>
+            </Link>
           </div>
 
           {/* Trust Indicators */}
