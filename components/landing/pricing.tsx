@@ -158,7 +158,7 @@ export function Pricing() {
   const [loading, setLoading] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const plans = pricingPlans[billingCycle];
+  const plans: PricingPlan[] = pricingPlans[billingCycle];
 
   /**
    * Handle subscription checkout
