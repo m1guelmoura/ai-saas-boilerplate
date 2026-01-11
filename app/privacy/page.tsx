@@ -47,7 +47,7 @@ export default function PrivacyPage() {
           <section className="mb-8">
             <h2 className="text-2xl font-semibold mb-4">3. Payment Processing</h2>
             <p className="mb-4">
-              All payment transactions are handled by Stripe, a third-party payment processor. We do not have access to your credit card details or full payment information. Stripe's use of your personal information is governed by their Privacy Policy, available at{" "}
+              All payment transactions are handled by Stripe, a third-party payment processor. We do not have access to your credit card details or full payment information. Stripe&apos;s use of your personal information is governed by their Privacy Policy, available at{" "}
               <a href="https://stripe.com/privacy" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
                 https://stripe.com/privacy
               </a>.
@@ -71,7 +71,7 @@ export default function PrivacyPage() {
           <section className="mb-8">
             <h2 className="text-2xl font-semibold mb-4">6. Changes to This Privacy Policy</h2>
             <p className="mb-4">
-              We may update this Privacy Policy from time to time. We will notify you of any changes by posting the new Privacy Policy on this page and updating the "Last Updated" date.
+              We may update this Privacy Policy from time to time. We will notify you of any changes by posting the new Privacy Policy on this page and updating the &quot;Last Updated&quot; date.
             </p>
           </section>
 
