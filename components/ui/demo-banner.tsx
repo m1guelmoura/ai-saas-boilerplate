@@ -9,9 +9,11 @@ import { Button } from "@/components/ui/button";
  * Dismissible top banner indicating this is a demo/portfolio project
  */
 export function DemoBanner() {
-  const [isDismissed, setIsDismissed] = useState(true);
+  const [isDismissed, setIsDismissed] = useState(false);
+  const [isMounted, setIsMounted] = useState(false);
 
   useEffect(() => {
+    setIsMounted(true);
     // Check if banner was previously dismissed
     const dismissed = localStorage.getItem("demo-banner-dismissed");
     setIsDismissed(dismissed === "true");
@@ -22,7 +24,8 @@ export function DemoBanner() {
     localStorage.setItem("demo-banner-dismissed", "true");
   };
 
-  if (isDismissed) {
+  // Don't render until mounted to avoid hydration mismatch
+  if (!isMounted || isDismissed) {
     return null;
   }
 
