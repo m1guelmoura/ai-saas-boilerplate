@@ -79,6 +79,7 @@ export async function POST(request: NextRequest) {
       ],
       success_url: `${process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"}/dashboard?success=true`,
       cancel_url: `${process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"}/dashboard?canceled=true`,
+      client_reference_id: user.id, // Pass user_id as client_reference_id for webhook fallback
       metadata: {
         user_id: user.id,
       },
