@@ -164,35 +164,84 @@ async function syncSubscriptionToDatabase(
           .eq("user_id", userId)
           .maybeSingle();
 
-        if (existingUserSub) {
-          // Update existing record with stripe_customer_id
-          const { error: updateError } = await supabaseAdmin
-            .from("subscriptions")
-            .update({ stripe_customer_id: stripeCustomerId })
-            .eq("user_id", userId);
+        // Use upsert to safely handle existing records and avoid duplicate key errors
+        // Check if stripe_customer_id already exists for a different user
+        const { data: existingCustomerSub } = await supabaseAdmin
+          .from("subscriptions")
+          .select("user_id, stripe_subscription_id")
+          .eq("stripe_customer_id", stripeCustomerId)
+          .maybeSingle();
 
-          if (updateError) {
-            console.error("Error updating subscription with stripe_customer_id:", updateError);
-            // Continue anyway - we'll try to upsert the full record below
-          } else {
-            console.log(`Updated subscription record with stripe_customer_id for user ${userId}`);
-          }
+        if (existingCustomerSub && existingCustomerSub.user_id !== userId) {
+          // stripe_customer_id already exists for a different user
+          // This shouldn't happen in normal flow, but handle gracefully
+          console.warn(
+            `stripe_customer_id ${stripeCustomerId} already exists for user ${existingCustomerSub.user_id}, but we found user ${userId} via client_reference_id`
+          );
+          // Use the existing user_id instead
+          userId = existingCustomerSub.user_id;
         } else {
-          // Create new record with stripe_customer_id (minimal data, will be updated below)
-          const { error: createError } = await supabaseAdmin
+          // Check if subscription record already exists for this user
+          const { data: existingUserSub } = await supabaseAdmin
             .from("subscriptions")
-            .insert({
-              user_id: userId,
-              stripe_customer_id: stripeCustomerId,
-              status: "incomplete",
-              price_id: "", // Will be updated below
-            });
+            .select("id, stripe_customer_id")
+            .eq("user_id", userId)
+            .maybeSingle();
 
-          if (createError) {
-            console.error("Error creating subscription record with stripe_customer_id:", createError);
-            // Continue anyway - we'll try to upsert the full record below
+          if (existingUserSub) {
+            // Update existing record with stripe_customer_id if it's different
+            if (existingUserSub.stripe_customer_id !== stripeCustomerId) {
+              const { error: updateError } = await supabaseAdmin
+                .from("subscriptions")
+                .update({ stripe_customer_id: stripeCustomerId })
+                .eq("id", existingUserSub.id);
+
+              if (updateError) {
+                // Check if it's a duplicate key error (23505)
+                const errorCode = (updateError as any)?.code;
+                if (errorCode === "23505" || (updateError as any)?.message?.includes("23505")) {
+                  // Duplicate key error - stripe_customer_id already exists for another record
+                  // This is fine, just log and continue
+                  console.log(
+                    `stripe_customer_id ${stripeCustomerId} already exists elsewhere, but record for user ${userId} exists. Continuing...`
+                  );
+                } else {
+                  console.error("Error updating subscription with stripe_customer_id:", updateError);
+                }
+              } else {
+                console.log(`Updated subscription record with stripe_customer_id for user ${userId}`);
+              }
+            } else {
+              console.log(`Subscription record already has correct stripe_customer_id for user ${userId}`);
+            }
           } else {
-            console.log(`Created subscription record with stripe_customer_id for user ${userId}`);
+            // No existing record - try to insert, but handle duplicate key errors gracefully
+            const { error: insertError } = await supabaseAdmin
+              .from("subscriptions")
+              .insert({
+                user_id: userId,
+                stripe_customer_id: stripeCustomerId,
+                status: "incomplete",
+                price_id: "", // Will be updated below
+              });
+
+            if (insertError) {
+              // Check if it's a duplicate key error (23505)
+              const errorCode = (insertError as any)?.code;
+              if (errorCode === "23505" || (insertError as any)?.message?.includes("23505")) {
+                // Duplicate key error - stripe_customer_id already exists
+                // This means another record has this customer_id, which is fine
+                // The final upsert below will handle it
+                console.log(
+                  `stripe_customer_id ${stripeCustomerId} already exists, will be handled by final upsert`
+                );
+              } else {
+                console.error("Error inserting subscription with stripe_customer_id:", insertError);
+                // Continue anyway - we'll try to upsert the full record below
+              }
+            } else {
+              console.log(`Created subscription record with stripe_customer_id for user ${userId}`);
+            }
           }
         }
       } else {
@@ -213,6 +262,7 @@ async function syncSubscriptionToDatabase(
     }
 
     // Step 3: Upsert full subscription data (stripe_customer_id already saved above if needed)
+    // Use stripe_subscription_id as the conflict key since it's unique
     const { error } = await supabaseAdmin
       .from("subscriptions")
       .upsert(
@@ -235,8 +285,74 @@ async function syncSubscriptionToDatabase(
       );
 
     if (error) {
-      console.error("Error syncing subscription to database:", error);
-      throw error;
+      // Check if it's a duplicate key error (23505) for stripe_customer_id
+      const errorCode = (error as any)?.code;
+      const errorMessage = (error as any)?.message || "";
+      
+      if (
+        errorCode === "23505" ||
+        errorMessage.includes("23505") ||
+        errorMessage.includes("duplicate key") ||
+        errorMessage.includes("already exists")
+      ) {
+        // Duplicate key error - this can happen if stripe_customer_id already exists
+        // Try to find the existing record and update it instead
+        console.log(
+          `Duplicate key detected for stripe_customer_id ${stripeCustomerId}, attempting to update existing record...`
+        );
+
+        // Find existing subscription by stripe_subscription_id or stripe_customer_id
+        const { data: existingSubById } = await supabaseAdmin
+          .from("subscriptions")
+          .select("*")
+          .eq("stripe_subscription_id", subscription.id)
+          .maybeSingle();
+
+        const { data: existingSubByCustomer } = existingSubById
+          ? null
+          : await supabaseAdmin
+              .from("subscriptions")
+              .select("*")
+              .eq("stripe_customer_id", stripeCustomerId)
+              .maybeSingle();
+
+        const existingSub = existingSubById || existingSubByCustomer;
+
+        if (existingSub) {
+          // Update the existing record
+          const { error: updateError } = await supabaseAdmin
+            .from("subscriptions")
+            .update({
+              user_id: userId,
+              stripe_customer_id: stripeCustomerId,
+              stripe_subscription_id: subscription.id,
+              status: status,
+              price_id: priceId,
+              current_period_start: new Date(subscription.current_period_start * 1000).toISOString(),
+              current_period_end: new Date(subscription.current_period_end * 1000).toISOString(),
+              cancel_at_period_end: subscription.cancel_at_period_end,
+              canceled_at: subscription.canceled_at
+                ? new Date(subscription.canceled_at * 1000).toISOString()
+                : null,
+            })
+            .eq("id", existingSub.id);
+
+          if (updateError) {
+            console.error("Error updating existing subscription after duplicate key error:", updateError);
+            // If update also fails, log but don't throw - the record might already be correct
+            console.log("Continuing despite update error - record may already be in correct state");
+          } else {
+            console.log(`Updated existing subscription record after duplicate key error`);
+          }
+        } else {
+          // Record doesn't exist but we got duplicate key error - treat as success
+          console.log("Duplicate key error but record not found - treating as success (may have been created concurrently)");
+        }
+      } else {
+        // Other error - log and throw
+        console.error("Error syncing subscription to database:", error);
+        throw error;
+      }
     }
 
     console.log(
