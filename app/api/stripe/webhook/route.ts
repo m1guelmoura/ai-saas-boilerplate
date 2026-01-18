@@ -108,12 +108,13 @@ export async function POST(request: NextRequest) {
 /**
  * Helper function to sync Stripe subscription to Supabase database
  * 
- * This function handles the "First Time Subscriber" flow by using fallbacks:
- * 1. Try to find user by stripe_customer_id
- * 2. Fallback 1: Try to find user by client_reference_id (Supabase User ID) from session
- * 3. Fallback 2: Try to find user by email from Stripe customer
+ * CRITICAL: Handles "First Time Subscriber" flow using client_reference_id
  * 
- * Once user is found, the stripe_customer_id is saved to ensure future lookups work.
+ * Flow:
+ * 1. Try to find user by stripe_customer_id (existing subscriptions)
+ * 2. IF NOT FOUND: Use client_reference_id from session to find user directly in auth.users
+ * 3. Once found, immediately UPDATE the user's subscription record with stripe_customer_id
+ * 4. Then proceed to create/update the subscription
  */
 async function syncSubscriptionToDatabase(
   subscription: Stripe.Subscription,
@@ -130,7 +131,7 @@ async function syncSubscriptionToDatabase(
     // Map Stripe status to our database status
     const status = mapStripeStatusToDatabase(subscription.status);
 
-    // Step 1: Try to find user by stripe_customer_id
+    // Step 1: Try to find user by stripe_customer_id (existing subscriptions)
     let { data: existingSubscription } = await supabaseAdmin
       .from("subscriptions")
       .select("user_id")
@@ -139,94 +140,65 @@ async function syncSubscriptionToDatabase(
 
     let userId: string | null = existingSubscription?.user_id || null;
 
-    // Step 2: Fallback 1 - Try to find user by client_reference_id (Supabase User ID)
+    // Step 2: CRITICAL FALLBACK - Use client_reference_id to find user directly
     if (!userId && session?.client_reference_id) {
       console.log(
-        `User not found by stripe_customer_id, trying client_reference_id: ${session.client_reference_id}`
+        `User not found by stripe_customer_id, using client_reference_id: ${session.client_reference_id}`
       );
       
-      const { data: userSubscription } = await supabaseAdmin
-        .from("subscriptions")
-        .select("user_id")
-        .eq("user_id", session.client_reference_id)
-        .single();
+      // Verify user exists in auth.users by ID
+      const { data: authUser, error: authError } = await supabaseAdmin.auth.admin.getUserById(
+        session.client_reference_id
+      );
 
-      if (userSubscription) {
-        userId = userSubscription.user_id;
+      if (authUser?.user && !authError) {
+        userId = authUser.user.id;
         console.log(`Found user via client_reference_id: ${userId}`);
-      }
-    }
-
-    // Step 3: Fallback 2 - Try to find user by metadata or email from Stripe customer
-    if (!userId) {
-      console.log(
-        `User not found by client_reference_id, trying Stripe customer metadata/email for: ${stripeCustomerId}`
-      );
-      
-      try {
-        // Retrieve customer from Stripe to get metadata and email
-        const customer = await stripe.customers.retrieve(stripeCustomerId);
         
-        if (customer && !customer.deleted) {
-          // First, try to get user_id from customer metadata (set during checkout)
-          if (
-            customer.metadata &&
-            typeof customer.metadata.supabase_user_id === "string"
-          ) {
-            const metadataUserId = customer.metadata.supabase_user_id;
-            console.log(`Found supabase_user_id in customer metadata: ${metadataUserId}`);
-            
-            // Verify user exists and get/create subscription record
-            const { data: userSubscription } = await supabaseAdmin
-              .from("subscriptions")
-              .select("user_id")
-              .eq("user_id", metadataUserId)
-              .single();
+        // CRITICAL: Immediately update/create the subscription record with stripe_customer_id
+        // This ensures future webhook calls can find the user by stripe_customer_id
+        // Check if subscription record exists for this user
+        const { data: existingUserSub } = await supabaseAdmin
+          .from("subscriptions")
+          .select("user_id")
+          .eq("user_id", userId)
+          .maybeSingle();
 
-            if (userSubscription) {
-              userId = userSubscription.user_id;
-              console.log(`Found user via customer metadata: ${userId}`);
-            } else {
-              // User exists in auth but no subscription record - use the metadata user_id
-              userId = metadataUserId;
-              console.log(`Using user_id from customer metadata, creating subscription record: ${userId}`);
-            }
+        if (existingUserSub) {
+          // Update existing record with stripe_customer_id
+          const { error: updateError } = await supabaseAdmin
+            .from("subscriptions")
+            .update({ stripe_customer_id: stripeCustomerId })
+            .eq("user_id", userId);
+
+          if (updateError) {
+            console.error("Error updating subscription with stripe_customer_id:", updateError);
+            // Continue anyway - we'll try to upsert the full record below
+          } else {
+            console.log(`Updated subscription record with stripe_customer_id for user ${userId}`);
           }
-          
-          // If still no user found, try email lookup
-          if (!userId && typeof customer.email === "string") {
-            console.log(`Trying email lookup: ${customer.email}`);
-            
-            // Get user from Supabase auth by email
-            // Note: listUsers() doesn't support email filtering, so we search in the results
-            const { data: authUsers } = await supabaseAdmin.auth.admin.listUsers();
-            
-            const matchingUser = authUsers.users.find(
-              (u) => u.email?.toLowerCase() === customer.email.toLowerCase()
-            );
+        } else {
+          // Create new record with stripe_customer_id (minimal data, will be updated below)
+          const { error: createError } = await supabaseAdmin
+            .from("subscriptions")
+            .insert({
+              user_id: userId,
+              stripe_customer_id: stripeCustomerId,
+              status: "incomplete",
+              price_id: "", // Will be updated below
+            });
 
-            if (matchingUser) {
-              // Check if user has a subscription record
-              const { data: userSubscription } = await supabaseAdmin
-                .from("subscriptions")
-                .select("user_id")
-                .eq("user_id", matchingUser.id)
-                .single();
-
-              if (userSubscription) {
-                userId = userSubscription.user_id;
-                console.log(`Found user via email: ${userId}`);
-              } else {
-                // User exists in auth but no subscription record - create one
-                userId = matchingUser.id;
-                console.log(`Found user via email, creating subscription record: ${userId}`);
-              }
-            }
+          if (createError) {
+            console.error("Error creating subscription record with stripe_customer_id:", createError);
+            // Continue anyway - we'll try to upsert the full record below
+          } else {
+            console.log(`Created subscription record with stripe_customer_id for user ${userId}`);
           }
         }
-      } catch (stripeError) {
+      } else {
         console.error(
-          `Error retrieving customer from Stripe: ${stripeError}`
+          `User not found in auth.users with id: ${session.client_reference_id}`,
+          authError
         );
       }
     }
@@ -235,18 +207,18 @@ async function syncSubscriptionToDatabase(
     if (!userId) {
       console.error(
         `No user found for Stripe customer: ${stripeCustomerId}. ` +
-        `Tried: stripe_customer_id, client_reference_id (${session?.client_reference_id || "N/A"}), and email lookup.`
+        `Tried: stripe_customer_id and client_reference_id (${session?.client_reference_id || "N/A"}).`
       );
       return;
     }
 
-    // Step 4: Upsert subscription data and ensure stripe_customer_id is saved
+    // Step 3: Upsert full subscription data (stripe_customer_id already saved above if needed)
     const { error } = await supabaseAdmin
       .from("subscriptions")
       .upsert(
         {
           user_id: userId,
-          stripe_customer_id: stripeCustomerId, // CRITICAL: Save stripe_customer_id for future lookups
+          stripe_customer_id: stripeCustomerId, // CRITICAL: Ensure stripe_customer_id is saved
           stripe_subscription_id: subscription.id,
           status: status,
           price_id: priceId,
